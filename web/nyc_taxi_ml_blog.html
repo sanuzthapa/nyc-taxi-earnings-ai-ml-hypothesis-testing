@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC Taxi Fare ML Blog</title>
+<style>
+  :root{
+    --bg:#fafaf7; --surface:#ffffff; --text:#1d2430; --muted:#5b6575; --line:#e4e2da;
+    --accent:#c98a00; --accent-ink:#1d2430; --blue:#2a5db0; --warn-bg:#fff6dd; --warn-line:#e8c66a;
+    --code-bg:#f1efe8;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#14171c; --surface:#1c2027; --text:#e8e8e3; --muted:#9aa3b2; --line:#2e343e;
+      --accent:#f0b429; --accent-ink:#14171c; --blue:#7aa7ee; --warn-bg:#2b2616; --warn-line:#6b5a22; --code-bg:#242932;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14171c; --surface:#1c2027; --text:#e8e8e3; --muted:#9aa3b2; --line:#2e343e;
+    --accent:#f0b429; --accent-ink:#14171c; --blue:#7aa7ee; --warn-bg:#2b2616; --warn-line:#6b5a22; --code-bg:#242932;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:17px/1.65 Georgia,"Times New Roman",serif}
+  .wrap{max-width:760px;margin:0 auto;padding:0 16px 80px}
+  header{padding:56px 0 24px;border-bottom:1px solid var(--line);margin-bottom:32px}
+  .kicker{font:600 12px/1 system-ui,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:clamp(28px,5vw,40px);line-height:1.15;margin:12px 0}
+  h2{font-size:24px;margin:48px 0 8px}
+  h3{font-size:18px;margin:28px 0 4px}
+  p.lede{color:var(--muted);font-size:19px;margin:0}
+  .sans{font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font:14px ui-monospace,Menlo,Consolas,monospace}
+  pre{background:var(--code-bg);padding:14px;border-radius:8px;overflow:auto;font:13.5px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  .note{background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:8px;padding:12px 16px;font:15px/1.5 system-ui,sans-serif;margin:20px 0}
+  table{border-collapse:collapse;width:100%;font:15px system-ui,sans-serif;margin:16px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px;margin:24px 0}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  @media (max-width:560px){.grid{grid-template-columns:1fr}}
+  label{display:block;font:600 13px system-ui,sans-serif;color:var(--muted);margin-bottom:4px}
+  input[type=number],select,textarea{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:16px system-ui,sans-serif}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  button{font:600 14px system-ui,sans-serif;padding:9px 14px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--text);cursor:pointer}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  .out{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:18px}
+  .big{font:700 34px system-ui,sans-serif;font-variant-numeric:tabular-nums}
+  .small{font:13px system-ui,sans-serif;color:var(--muted)}
+  svg text{fill:var(--muted);font:11px system-ui,sans-serif}
+  .theme{float:right}
+  .bar{height:14px;border-radius:4px;background:var(--blue)}
+  .bar.cash{background:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <button class="theme" id="themeBtn" aria-label="Toggle theme">Theme</button>
+  <div class="kicker">Technical blog · Data science</div>
+  <h1>Do payment methods change NYC taxi fares? An A/B test, a model, and a calculator</h1>
+  <p class="lede">An end-to-end walk through ingestion from the NYC OpenData SoQL API, cleaning, a card-vs-cash hypothesis test, and fare prediction with Linear Regression and Random Forest.</p>
+</header>
+
+<h2>1 · The question</h2>
+<p>Does the way a passenger pays (credit card or cash) relate to the metered base fare? And can we predict that fare from information known <em>before</em> the trip starts?</p>
+<p>The pipeline has four stages, one notebook each: <code>01_soql_ingestion</code> → <code>02_eda_cleaning</code> → <code>03_hypothesis_testing</code> → <code>04_model_training</code>, with reusable code in <code>src/</code>.</p>
+
+<h2>2 · Getting the data</h2>
+<p>Trips come from the Socrata endpoint <code>4b4i-vvec</code>. Server-side SoQL picks the 17 columns we need and pages through the results:</p>
+<pre>$select = vendorid, tpep_pickup_datetime, …, total_amount
+$limit  = 50000
+$order  = :id</pre>
+<div class="note"><strong>Sampling caveat.</strong> Ordering by <code>:id</code> returns the first 50,000 rows, almost all from <strong>1 January 2023, a Sunday</strong>. Everything below describes that day, not the whole year. Weekday rush hour barely appears (1 trip in the original run).</div>
+
+<h2>3 · Cleaning</h2>
+<table>
+  <tr><th>Rule</th><th>Why</th></tr>
+  <tr><td>1–4 passengers</td><td>0 is a logging error; 5–6 are rare</td></tr>
+  <tr><td>0 &lt; distance ≤ P99</td><td>Zero-mile trips are cancellations; the top 1 % is a long tail</td></tr>
+  <tr><td>0 &lt; duration ≤ P99</td><td>Same</td></tr>
+  <tr><td>0 &lt; fare ≤ P99.5 (≈ $87.40)</td><td>Drops voids and errors but keeps the $70 flat-rate JFK runs</td></tr>
+</table>
+<p>In the original run, 50,000 rows became <strong>45,192</strong>.</p>
+
+<h2>4 · The A/B test</h2>
+<p>Hypotheses: <em>H₀</em>: μ<sub>card</sub> = μ<sub>cash</sub>; <em>H<sub>A</sub></em>: they differ. Welch's t-test, α = 0.05.</p>
+<div class="card sans">
+  <div class="small">Mean base fare, original run (card n = 33,948, cash n = 10,728)</div>
+  <div style="margin-top:10px">Card <strong>$19.76</strong><div class="bar" style="width:98.7%"></div></div>
+  <div style="margin-top:10px">Cash <strong>$19.24</strong><div class="bar cash" style="width:96.1%"></div></div>
+  <p class="small" style="margin:12px 0 0">t = 2.92, p = 0.0035. The 52¢ gap is statistically significant but small (about 3 % of the mean; bars start at $0).</p>
+</div>
+<p>Reading this honestly: <code>fare_amount</code> excludes tips, so the gap is not tips. It is also an <em>observational</em> comparison, because passengers choose how to pay. A significant p-value does not show that nudging people toward card would raise fares. Notebook 03 adds an effect size, a confidence interval and a Mann–Whitney check to keep the result in proportion.</p>
+
+<h2>5 · Predicting the fare</h2>
+<p>Distance and duration are unknown before a ride, so the model uses <strong>route history</strong>: the average distance and duration of past trips between the same pickup and drop-off zones.</p>
+<h3>A leakage trap</h3>
+<p>The first version computed these route averages over <em>all</em> rows, including the test set. For a route seen once, “mean distance” was that trip's own distance, which is almost the answer. The repo now fits the route table on the training split only (<code>RoutePairAggregator</code>) and falls back to the global mean for unseen routes. Notebook 04 quantifies how much the old approach flattered the scores.</p>
+<table>
+  <tr><th>Original run (leaky route means)</th><th class="num">RMSE</th><th class="num">R²</th></tr>
+  <tr><td>Linear Regression</td><td class="num">$5.27</td><td class="num">0.8895</td></tr>
+  <tr><td>Random Forest (100 trees, depth 10)</td><td class="num">$5.16</td><td class="num">0.8941</td></tr>
+</table>
+<p class="small sans">Rerun notebook 04 for the leakage-safe numbers; expect them to be lower.</p>
+<p>Mean distance dominated (Random Forest importance ≈ 95 %), then mean duration (≈ 4 %). Passenger count, vendor and rush hour were negligible.</p>
+
+<h2>6 · Fare calculator</h2>
+<div class="card sans" id="calc">
+  <div class="grid">
+    <div><label for="dist">Route distance: <span id="distV"></span> mi</label><input id="dist" type="range" min="0.5" max="25" step="0.1" value="3"></div>
+    <div><label for="dur">Route duration: <span id="durV"></span> min</label><input id="dur" type="range" min="2" max="60" step="1" value="15"></div>
+    <div><label for="pax">Passengers</label><select id="pax"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+    <div><label for="rush">Weekday rush hour?</label><select id="rush"><option value="0">No</option><option value="1">Yes</option></select></div>
+    <div><label for="vendor">Vendor</label><select id="vendor"><option value="1">1 · Creative Mobile</option><option value="2" selected>2 · VeriFone</option></select></div>
+  </div>
+  <div class="out">
+    <div><div class="small">TLC meter reference (simplified)</div><div class="big" id="tlc">–</div><div class="small" id="speed"></div></div>
+    <div><div class="small">Your trained linear model</div><div class="big" id="mdl">–</div><div class="small" id="mdlNote">Load parameters below</div></div>
+  </div>
+  <svg id="chart" viewBox="0 0 600 200" width="100%" role="img" aria-label="Estimated fare versus distance at the chosen average speed"></svg>
+  <h3 style="margin-top:20px">Load trained parameters</h3>
+  <p class="small">Run notebook 04; it writes <code>web/model_params.json</code>. Choose that file or paste its contents.</p>
+  <input type="file" id="file" accept="application/json" style="margin-bottom:8px">
+  <textarea id="json" rows="5" placeholder='{"intercept": …, "coefficients": {"mean_distance": …}}'></textarea>
+  <div style="margin-top:8px"><button class="primary" id="apply">Apply parameters</button> <button id="clear">Clear</button></div>
+  <p class="small" id="err" style="color:#b3261e"></p>
+</div>
+<p class="small sans">The TLC reference uses the published standard rate: $3.00 initial charge, then $0.70 per ⅕ mile above 12 mph or $0.70 per minute at or below 12 mph. The real meter switches continuously and this tool applies one rate to the whole trip. It excludes surcharges, tolls and tips, and is a sanity check, not a quote.</p>
+
+<h2>7 · Limitations</h2>
+<ul>
+  <li>One-day sample unless you re-sample with a date-spread <code>where</code> clause.</li>
+  <li>Observational data: the A/B test shows association, not cause.</li>
+  <li>Route averages need history; unseen routes fall back to a global mean.</li>
+  <li>Base fare is mostly a deterministic meter formula, so high R² is expected and says little about business value.</li>
+</ul>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){return document.getElementById(id)};
+  var params = null;
+
+  // theme toggle
+  try{var saved=localStorage.getItem("theme"); if(saved) document.documentElement.setAttribute("data-theme",saved);}catch(e){}
+  $("themeBtn").onclick=function(){
+    var cur=document.documentElement.getAttribute("data-theme");
+    var dark = cur ? cur==="dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme",next);
+    try{localStorage.setItem("theme",next)}catch(e){}
+  };
+
+  function tlc(mi, min){
+    var speed = mi/(min/60);
+    return {fare: 3 + (speed>12 ? mi*5*0.70 : min*0.70), speed: speed};
+  }
+  function model(mi, min){
+    if(!params) return null;
+    var c = params.coefficients;
+    return params.intercept + c.mean_distance*mi + c.mean_duration*min
+         + c.passenger_count*Number($("pax").value) + c.rush_hour*Number($("rush").value)
+         + c.vendorid_2*(Number($("vendor").value)===2?1:0);
+  }
+  function usd(x){return "$"+x.toFixed(2)}
+
+  function drawChart(speed){
+    var W=600,H=200,pl=40,pb=24,pt=10,pr=10, maxD=25;
+    var pts=[], pts2=[], ymax=10;
+    for(var d=0.5; d<=maxD; d+=0.5){
+      var m=d/speed*60; if(m<=0) continue;
+      var a=tlc(d,m).fare; var b=model(d,m);
+      pts.push([d,a]); if(b!==null) pts2.push([d,b]);
+      ymax=Math.max(ymax,a,b===null?0:b);
+    }
+    ymax=Math.ceil(ymax/10)*10;
+    var x=function(d){return pl+(d/maxD)*(W-pl-pr)}, y=function(v){return H-pb-(v/ymax)*(H-pb-pt)};
+    var s='';
+    for(var i=0;i<=4;i++){var v=ymax*i/4; s+='<line x1="'+pl+'" x2="'+(W-pr)+'" y1="'+y(v)+'" y2="'+y(v)+'" stroke="currentColor" stroke-opacity=".12"/><text x="'+(pl-6)+'" y="'+(y(v)+4)+'" text-anchor="end">$'+Math.round(v)+'</text>'}
+    for(var d2=0; d2<=maxD; d2+=5){s+='<text x="'+x(d2)+'" y="'+(H-6)+'" text-anchor="middle">'+d2+' mi</text>'}
+    function path(p,color){return '<polyline fill="none" stroke="'+color+'" stroke-width="2.5" points="'+p.map(function(q){return x(q[0])+','+y(q[1])}).join(' ')+'"/>'}
+    s+=path(pts,"var(--accent)");
+    if(pts2.length) s+=path(pts2,"var(--blue)");
+    s+='<text x="'+(pl+6)+'" y="'+(pt+10)+'" style="fill:var(--accent)">TLC reference</text>';
+    if(pts2.length) s+='<text x="'+(pl+90)+'" y="'+(pt+10)+'" style="fill:var(--blue)">Trained model</text>';
+    $("chart").innerHTML=s;
+  }
+
+  function update(){
+    var mi=Number($("dist").value), min=Number($("dur").value);
+    $("distV").textContent=mi.toFixed(1); $("durV").textContent=min;
+    var t=tlc(mi,min);
+    $("tlc").textContent=usd(t.fare);
+    $("speed").textContent="Average speed "+t.speed.toFixed(1)+" mph → "+(t.speed>12?"distance rate":"time rate");
+    var m=model(mi,min);
+    $("mdl").textContent = m===null ? "–" : usd(Math.max(m,3));
+    $("mdlNote").textContent = m===null ? "Load parameters below" : "Linear regression, physical-scale coefficients";
+    drawChart(Math.max(t.speed,1));
+  }
+
+  function load(text){
+    $("err").textContent="";
+    try{
+      var p=JSON.parse(text), c=p.coefficients;
+      ["mean_distance","mean_duration","passenger_count","rush_hour","vendorid_2"].forEach(function(k){
+        if(typeof c[k]!=="number") throw new Error("missing coefficient: "+k);
+      });
+      if(typeof p.intercept!=="number") throw new Error("missing intercept");
+      params=p; update();
+    }catch(e){ $("err").textContent="Could not read parameters: "+e.message }
+  }
+
+  ["dist","dur","pax","rush","vendor"].forEach(function(id){$(id).addEventListener("input",update)});
+  $("apply").onclick=function(){load($("json").value)};
+  $("clear").onclick=function(){params=null;$("json").value="";$("err").textContent="";update()};
+  $("file").onchange=function(e){
+    var f=e.target.files[0]; if(!f) return;
+    var r=new FileReader(); r.onload=function(){$("json").value=r.result; load(r.result)}; r.readAsText(f);
+  };
+  update();
+})();
+</script>
+</body>
+</html>
